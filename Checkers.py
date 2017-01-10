@@ -5,7 +5,6 @@ class Checkers:
 
     def __init__(self, size=8):
 
-        # TODO: Add board to constructor?
         self.size = size
         self.game_over = False
         self.winner = None
@@ -17,6 +16,10 @@ class Checkers:
         return "b" if color.lower() == "w" else "w"
 
     def update_shift_count(self, move):
+        """
+        Updates the number of successive shifts. This is useful to
+        :param move:
+        """
         if len(move) == 2:
             self.shift_count += 1
         else:
@@ -64,12 +67,6 @@ class Checkers:
 
         # End of recursion: here, no new jumps are available.
         if len(s_jumps) == 0 and len(jump) > 1:
-
-            # If we land on the exact same position,
-            # pop the last jump out of the move.
-
-            if jump[-1] == jump[0]:
-                jump.pop()
 
             # Check if jump is a sub-jump of an existing move.
             # For this, we convert jumps to strings.

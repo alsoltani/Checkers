@@ -1,3 +1,6 @@
+import unicodedata
+
+
 class Board:
 
     def __init__(self, board=None, size=8):
@@ -5,12 +8,22 @@ class Board:
         assert size >= 4 and size % 2 == 0
         self.size = size
 
+        # Check for the different types of input.
+
         if board is None:
             self.generate_initial_board()
+
         elif isinstance(board, str):
             self.board = list(map(list, self.convert_board(self.size, board)))
+
         elif all(isinstance(elem, str) for elem in board):
             self.board = list(map(list, board))
+
+        elif all(isinstance(elem, unicode) for elem in board):
+            def uni_to_str(u):
+                return unicodedata.normalize('NFKD', u).encode('ascii', 'ignore')
+            self.board = list(map(lambda u: list(uni_to_str(u)), board))
+
         elif all(isinstance(elem, list) for elem in board):
             self.board = board
 

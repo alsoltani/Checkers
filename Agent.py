@@ -2,17 +2,17 @@ import time
 import random
 import math
 import copy
-from Board import Board
-from Checkers import Checkers
 
 
 class MonteCarloAgent:
 
-    def __init__(self, checkers, color, **kwargs):
+    def __init__(self, checkers, color, sim_time=5, c=1, b=0.1):
         self.color = color
         self.checkers = checkers
-        self.sim_time = kwargs.get('sim_time', 5)
-        self.state_node = {}
+        self.sim_time = sim_time  # Simulation time
+        self.state_node = {}  # Game state tree
+        self.c = c  # Exploration value
+        self.b = b  # Pre-tuned bias constant
 
     def static_concentric_val(self, game_state, king_coefficient=20):
 
@@ -76,16 +76,16 @@ class MonteCarloAgent:
             n_children = len(self.checkers.allowed_moves(game_state))
             root = Node(game_state, None, n_children)
 
-        # even if this is a "recycled" node we've already used,
-        # remove its parent as it is now considered our root level node
+        # Remove its parent as it is now considered our root level node.
+
         root.parent = None
 
         sim_count = 0
         now = time.time()
         while time.time() - now < self.sim_time and root.moves_unfinished > 0:
             picked_node = self.tree_policy(root)
-            result = self.simulate(picked_node.game_state)
-            self.back_prop(picked_node, result)
+            result, actions = self.simulate(picked_node.game_state)
+            self.back_prop(picked_node, result, actions, player=picked_node.game_state[1])
             sim_count += 1
 
         for child in root.children:
@@ -93,19 +93,10 @@ class MonteCarloAgent:
             position = child.move
 
             results[tuple(position)] = (wins, plays)
-
-        for position in sorted(results, key=lambda x: results[x][1]):
-            print('{}: ({}/{})'.format(position, results[position][0], results[position][1]))
-        print('{} simulations performed.'.format(sim_count))
         return self.best_action(root)
 
     @staticmethod
     def best_action(node):
-
-        """Returns the best action from this game state node.
-        In Monte Carlo Tree Search we pick the one that was
-        visited the most.  We can break ties by picking
-        the state that won the most."""
 
         most_plays = -float('inf')
         best_wins = -float('inf')
@@ -128,35 +119,52 @@ class MonteCarloAgent:
         return random.choice(best_actions)
 
     @staticmethod
-    def back_prop(node, delta):
-        """Given a node and a delta value for wins,
-        propagate that information up the tree to the root."""
+    def back_prop(node, delta, actions, player):
+
+        t = 0
         while node.parent is not None:
             node.plays += 1
             node.wins += delta
+
+            for u in xrange(t, len(actions[player])):
+                if actions[player][u] not in actions[player][t:u]:
+                    node.amaf_plays += 1
+                    node.amaf_wins += delta
+
+            t += 1
             node = node.parent
 
-        # update root node of entire tree
+        # Update root node of entire tree.
+
         node.plays += 1
         node.wins += delta
 
+        for u in xrange(t, len(actions[player])):
+            if actions[player][u] not in actions[player][t:u]:
+                node.amaf_plays += 1
+                node.amaf_wins += delta
+
     def tree_policy(self, root):
-        """Given a root node, determine which child to visit
-        using Upper Confidence Bound."""
+
+        """
+        Given a root node, determine which child to visit
+        using Upper Confidence Bound.
+        """
+
         cur_node = root
 
         while True and root.moves_unfinished > 0:
 
-            # TODO: use end_game?
             legal_moves = self.checkers.allowed_moves(cur_node.game_state)
 
             if self.checkers.end_game(cur_node.game_state) is not None:
-                # the game is won
+                # Game is over.
                 cur_node.propagate_completion()
                 return cur_node
 
             elif len(cur_node.children) < len(legal_moves):
-                # children are not fully expanded, so expand one
+
+                # Children are not fully expanded, expand one.
                 unexpanded = [
                     move for move in legal_moves
                     if tuple(move) not in cur_node.moves_expanded
@@ -175,28 +183,33 @@ class MonteCarloAgent:
                 return child
 
             else:
-                # Every possible next state has been expanded, so pick one
+                # Every possible next state has been expanded, pick one.
                 cur_node = self.best_child(cur_node)
 
         return cur_node
 
     def best_child(self, node):
-        enemy_turn = (node.game_state[1] != self.color)
 
-        c = 1  # 'exploration' value
+        enemy_turn = (node.game_state[1] != self.color)
         values = {}
+
         for child in node.children:
             wins, plays = child.get_wins_plays()
+            a_wins, a_plays = child.get_amaf_wins_plays()
 
             if enemy_turn:
-                # the enemy will play against us, not for us
                 wins = plays - wins
+                a_wins = a_plays - a_wins
+
             _, parent_plays = node.get_wins_plays()
+            beta = node.get_beta(self.b)
 
-            assert parent_plays > 0
-
-            values[child] = (wins / plays) \
-                + c * math.sqrt(2 * math.log(parent_plays) / plays)
+            if a_plays > 0:
+                values[child] = (1 - beta) * (wins / plays) + beta * (a_wins / a_plays) \
+                    + self.c * math.sqrt(2 * math.log(parent_plays) / plays)
+            else:
+                values[child] = (wins / plays) + \
+                                self.c * math.sqrt(2 * math.log(parent_plays) / plays)
 
         best_choice = max(values, key=values.get)
         return best_choice
@@ -207,6 +220,8 @@ class MonteCarloAgent:
         a random game to completion, and return the profit value
         (1 for a win, 0.5 for a draw, 0 for a loss)"""
 
+        actions = {game_state[1]: [], self.checkers.opponent(game_state[1]): []}
+
         state = copy.deepcopy(game_state)
         checkers_copy = copy.deepcopy(self.checkers)
 
@@ -214,46 +229,18 @@ class MonteCarloAgent:
             result = checkers_copy.end_game(state)
             if result is not None:
 
-                # for s in map(lambda r: "".join(r), state[0].get_board()):
-                #    print s
-                # print
-
-                print "Game over!", result
                 if result == self.color:
-                    return 1
+                    return 1, actions
                 elif result == checkers_copy.opponent(self.color):
-                    return 0
+                    return 0, actions
                 elif result == "draw":
-                    return .5
+                    return .5, actions
                 else:
                     raise ValueError
 
             moves = checkers_copy.allowed_moves(state)
-
-            # Light playout w/ scoring function + epsilon-greedy pick.
-            best_score = -float("inf")
-            best_move = None
-            epsilon = .0
-
-            for current_move in moves:
-                state_to_score = copy.deepcopy(state)
-                state_to_score = checkers_copy.update_board(state_to_score, current_move)
-
-                current_score = self.static_concentric_val(state_to_score)
-
-                if current_score > best_score:
-                    best_move = current_move
-                    best_score = current_score
-
-            probability = random.random()
-            if probability < epsilon:
-                picked = best_move
-            else:
-                picked = random.choice(moves)
-
-            # for s in map(lambda r: "".join(r), state[0].get_board()):
-            #    print s
-            # print
+            picked = random.choice(moves)
+            actions[state[1]].append(picked)
 
             state = checkers_copy.update_board(state, picked)
             checkers_copy.update_shift_count(picked)
@@ -262,9 +249,13 @@ class MonteCarloAgent:
 class Node:
 
     def __init__(self, game_state, move, amount_children):
+
+        # TODO: Use heuristic for Q, N initialization?
         self.game_state = game_state
-        self.plays = 0
-        self.wins = 0
+        self.plays = 10
+        self.wins = 0.5
+        self.amaf_plays = 10
+        self.amaf_wins = 0.5
         self.children = []
         self.parent = None
         self.moves_expanded = set()  # which moves have we tried at least once
@@ -274,11 +265,13 @@ class Node:
         self.move = move
 
     def propagate_completion(self):
+
         """
         If all children of this move have each been expanded to
         completion, tell the parent that it has one fewer children
         left to expand.
         """
+
         if self.parent is None:
             return
 
@@ -298,41 +291,9 @@ class Node:
     def get_wins_plays(self):
         return self.wins, self.plays
 
-if __name__ == "__main__":
+    def get_amaf_wins_plays(self):
+        return self.amaf_wins, self.amaf_plays
 
-    hacker_rank = False
-
-    if not hacker_rank:
-
-        that_color = "b"
-        that_size = 8
-
-        that_board = [
-            '________',
-            '__b_____',
-            '_w_w____',
-            '________',
-            '_w______',
-            '______b_',
-            '_____w__',
-            '____w___'
-        ]
-
-    else:
-
-        that_color = raw_input()
-        that_size = int(raw_input())
-
-        that_board = []
-        for k in xrange(that_size):
-            that_board.append(raw_input())
-
-    that_board = Board(that_board)
-    that_checkers = Checkers()
-
-    agent = MonteCarloAgent(that_checkers, that_color, **{"sim_time": 5})
-    that_move = agent.play((that_board, that_color))
-
-    print(len(that_move) - 1)
-    for coord in that_move:
-        print coord[0], coord[1]
+    def get_beta(self, b):
+        return self. amaf_plays / (self.plays + self.amaf_plays +
+                                   4 * self.plays * self.amaf_plays * pow(b, 2))
